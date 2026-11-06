@@ -4,3 +4,11 @@ __pycache__/
 .ipynb_checkpoints/
 mlruns/
 .mlflow/
+
+models/*.pkl
+models/*.joblib
+
+models/*
+data/raw/*
+*.pkl
+*.joblib

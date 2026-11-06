@@ -1,138 +1,55 @@
-from flask import Flask, request, render_template_string
-import pandas as pd
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import List
 import joblib
+import pandas as pd
 import os
 
-app = Flask(__name__)
+app = FastAPI(title="Hotel Booking Inference API", version="1.0.0")
+MODEL_PATH = "models/random_forest.pkl"
 
-# Main project folder
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+class BookingFeatures(BaseModel):
+    lead_time: int = Field(..., ge=0, example=34)
+    arrival_date_year: int = Field(..., example=2026)
+    arrival_date_week_number: int = Field(..., ge=1, le=53, example=27)
+    arrival_date_day_of_month: int = Field(..., ge=1, le=31, example=1)
+    stays_in_weekend_nights: int = Field(..., ge=0, example=0)
+    stays_in_week_nights: int = Field(..., ge=0, example=2)
+    adults: int = Field(..., ge=1, example=2)
+    adr: float = Field(..., ge=0.0, example=98.5)
 
-# Saved machine-learning model path
-MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "tuned_random_forest_hotel_cancellation_model.pkl"
-)
+@app.get("/health")
+def health_check():
+    loaded = os.path.exists(MODEL_PATH)
+    return {"status": "healthy" if loaded else "degraded", "model_loaded": loaded}
 
-# Find the HTML file inside the templates folder automatically
-TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+@app.get("/metadata")
+def get_metadata():
+    return {
+        "model_name": "Hotel Booking Random Forest Classifier",
+        "framework": "scikit-learn",
+        "target": "is_canceled"
+    }
 
-HTML_PATH = next(
-    os.path.join(TEMPLATES_DIR, file_name)
-    for file_name in os.listdir(TEMPLATES_DIR)
-    if os.path.isfile(os.path.join(TEMPLATES_DIR, file_name))
-)
-
-# Load the trained model
-model = joblib.load(MODEL_PATH)
-
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    result = None
-    probability = None
-
-    if request.method == "POST":
-        hotel = request.form["hotel"]
-        lead_time = int(request.form["lead_time"])
-        arrival_date_year = int(request.form["arrival_date_year"])
-        arrival_date_month = request.form["arrival_date_month"]
-        arrival_date_week_number = int(request.form["arrival_date_week_number"])
-        arrival_date_day_of_month = int(request.form["arrival_date_day_of_month"])
-        stays_in_weekend_nights = int(request.form["stays_in_weekend_nights"])
-        stays_in_week_nights = int(request.form["stays_in_week_nights"])
-        adults = int(request.form["adults"])
-        children = int(request.form["children"])
-        babies = int(request.form["babies"])
-        meal = request.form["meal"]
-        country = request.form["country"].upper()
-        market_segment = request.form["market_segment"]
-        distribution_channel = request.form["distribution_channel"]
-        is_repeated_guest = int(request.form["is_repeated_guest"])
-        previous_cancellations = int(request.form["previous_cancellations"])
-
-        previous_bookings_not_canceled = int(
-            request.form["previous_bookings_not_canceled"]
-        )
-
-        reserved_room_type = request.form["reserved_room_type"]
-        assigned_room_type = request.form["assigned_room_type"]
-        deposit_type = request.form["deposit_type"]
-        days_in_waiting_list = int(request.form["days_in_waiting_list"])
-        customer_type = request.form["customer_type"]
-        adr = float(request.form["adr"])
-
-        required_car_parking_spaces = int(
-            request.form["required_car_parking_spaces"]
-        )
-
-        total_of_special_requests = int(
-            request.form["total_of_special_requests"]
-        )
-
-        # Create the same features used in the Jupyter Notebook
-        total_nights = stays_in_weekend_nights + stays_in_week_nights
-        total_guests = adults + children + babies
-        is_family = int(children > 0 or babies > 0)
-        total_revenue = adr * total_nights
-
-        # Create one booking row for prediction
-        booking_data = pd.DataFrame([{
-            "hotel": hotel,
-            "lead_time": lead_time,
-            "arrival_date_year": arrival_date_year,
-            "arrival_date_month": arrival_date_month,
-            "arrival_date_week_number": arrival_date_week_number,
-            "arrival_date_day_of_month": arrival_date_day_of_month,
-            "stays_in_weekend_nights": stays_in_weekend_nights,
-            "stays_in_week_nights": stays_in_week_nights,
-            "adults": adults,
-            "children": children,
-            "babies": babies,
-            "meal": meal,
-            "country": country,
-            "market_segment": market_segment,
-            "distribution_channel": distribution_channel,
-            "is_repeated_guest": is_repeated_guest,
-            "previous_cancellations": previous_cancellations,
-            "previous_bookings_not_canceled": previous_bookings_not_canceled,
-            "reserved_room_type": reserved_room_type,
-            "assigned_room_type": assigned_room_type,
-            "deposit_type": deposit_type,
-            "days_in_waiting_list": days_in_waiting_list,
-            "customer_type": customer_type,
-            "adr": adr,
-            "required_car_parking_spaces": required_car_parking_spaces,
-            "total_of_special_requests": total_of_special_requests,
-            "total_nights": total_nights,
-            "total_guests": total_guests,
-            "is_family": is_family,
-            "total_revenue": total_revenue
-        }])
-
-        # Prediction
-        prediction = model.predict(booking_data)[0]
-
-        probability = round(
-            model.predict_proba(booking_data)[0][1] * 100,
-            2
-        )
-
-        if prediction == 1:
-            result = "This booking is likely to be cancelled."
-        else:
-            result = "This booking is unlikely to be cancelled."
-
-    # Read separate frontend file
-    with open(HTML_PATH, "r", encoding="utf-8") as file:
-        html_code = file.read()
-
-    return render_template_string(
-        html_code,
-        result=result,
-        probability=probability
-    )
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+@app.post("/predict")
+def predict_single(booking: BookingFeatures):
+    if not os.path.exists(MODEL_PATH):
+        raise HTTPException(status_code=503, detail="Model artifact unavailable.")
+    
+    model = joblib.load(MODEL_PATH)
+    base_df = pd.read_csv("data/raw/hotel_bookings.csv").drop(columns=["is_canceled"], errors="ignore").head(1).copy()
+    
+    # Feature engineering matching training data
+    base_df["total_nights"] = base_df["stays_in_weekend_nights"] + base_df["stays_in_week_nights"]
+    base_df["total_guests"] = base_df["adults"] + base_df["children"].fillna(0) + base_df["babies"].fillna(0)
+    base_df["is_family"] = ((base_df["children"] > 0) | (base_df["babies"] > 0)).astype(int)
+    base_df["total_revenue"] = base_df["total_nights"] * base_df["adr"]
+    
+    # Inject API input values
+    for key, val in booking.model_dump().items():
+        if key in base_df.columns:
+            base_df.loc[0, key] = val
+            
+    prediction = int(model.predict(base_df)[0])
+    prob = float(model.predict_proba(base_df)[0][1]) if hasattr(model, "predict_proba") else None
+    return {"prediction": prediction, "is_canceled": bool(prediction), "cancellation_probability": prob}
